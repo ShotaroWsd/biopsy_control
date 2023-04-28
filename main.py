@@ -67,7 +67,7 @@ def main():
             print(Fz)
             #print(Fz_list[count])
             
-            
+            '''
             plt.cla()
             plt.plot(time_list, Fz_list)
             plt.ylim(-50, 50)
@@ -77,7 +77,7 @@ def main():
             plt.pause(0.001)
 
             time.sleep(0.1)
-            
+            '''
             
             count += 1
 
