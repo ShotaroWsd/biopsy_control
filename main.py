@@ -45,7 +45,7 @@ class ForcePID():
         return output
 
 
-def calc_zeros(dll, port_num, limit, status):
+def calc_sensor_zeros(dll, port_num, limit, status):
     print('wait for calc zeros')
     if dll.SetSerialMode(port_num, True) == False:
             print('連続読み込みモードを開始できません')
@@ -64,7 +64,7 @@ def calc_zeros(dll, port_num, limit, status):
 
     for j in range(len(limit)):
         zeros[j] = zeros[j] / repeat_time
-        
+
     if dll.SetSerialMode(port_num, False) == False:
         print('連続読み込みモードを停止できません')
         exit()
@@ -88,7 +88,7 @@ def main():
 
     com_motor = 'COM7'  # モータコントローラが接続されるCOMポート
     bit_rate = 9600  # シリアル通信のビットレート
-    motor_serial = serial.Serial(com_motor, bit_rate, timeout = 0.1)
+    
 
 
    
@@ -124,36 +124,54 @@ def main():
             print('連続読み込みモードを開始できません')
             exit()
         '''
+        
+        send_data = [0, 1, 0]
+        target_force = float(input('input target force[N]'))
         PID = ForcePID(Kp, Ki, Kd)  # PIDインスタンス生成
         count = 0
         time_list = []
         Fz_list = []
+        zeros = calc_sensor_zeros(dll, port_num, limit, status)
+        motor_serial = serial.Serial(com_motor, bit_rate, timeout = 0.1)
+        time.sleep(5)
         start_time = time.perf_counter()
-        zeros = calc_zeros(dll, port_num, limit, status)
+        
+        '''
         target_position = int(input('input target position 0~4095:'))
         send_data = [0, target_position, target_position >> 8]
-        #send_data = struct.pack('B', send_data)
+        send_data = struct.pack('<H', target_position)
+        send_data = list(send_data)
+        send_data.insert(0, 0)
         print(send_data)
+        '''
+
     
         while True: 
             if dll.GetLatestData(port_num, data, ctypes.pointer(status)) == True: 
                 time_passed = time.perf_counter() - start_time
                 for i in range(len(limit)):
                     data_newton[i] = limit[i] / 10000.0 * data[i] - zeros[i]
-                motor_serial.write(send_data)  
-                time.sleep(0.02)
-                Fz = data_newton[data_name.index('Fz')]
-                print(Fz)
-                time_list.append(time_passed)
-                Fz_list.append(data_newton[2])
 
-                #print(data_newton[2])
+                Fz = data_newton[data_name.index('Fz')]
+                if Fz > target_force:
+                    send_data[1] = 1
+                elif Fz < target_force:
+                    send_data[1] = 2
+                elif Fz == target_force:
+                    send_data[1] = 0
+                motor_serial.write(send_data)  
+                time.sleep(0.01)
+                
+                print(round(Fz, 3), end = ' N ')
+                time_list.append(time_passed)
+                Fz_list.append(Fz)
+                
+ 
                 read_data_binary = motor_serial.read_all()
-                #print(len(read_data_binary), end=' ')
-                #print(read_data_binary)
-                #read_data = struct.unpack('3B', read_data_binary)
-                #now_position = read_data[1] + read_data[2] * 256
-                #print(now_position)
+                print(read_data_binary, end = ':')
+                read_data = struct.unpack('3B', read_data_binary)
+                now_position = read_data[1] + read_data[2] * 256
+                print(now_position)
                 
                 """
                 plt.cla()
@@ -170,8 +188,8 @@ def main():
             if keyboard.is_pressed('q'):  # qを押して停止
                 break
             elif keyboard.is_pressed('s'):
-                target_position = int(input('input target position 0~4095:'))
-                send_data = [0, target_position, target_position >> 8]
+                target_force = float(input('input target force[N]'))
+
 
         plt.figure()   
         plt.plot(time_list, Fz_list)
@@ -182,7 +200,7 @@ def main():
             
     finally:
         #print(Fz_list)
-        #0motor_serial.close()
+        motor_serial.close()
         #sdll.SetSerialMode(port_num, False)
         dll.PortClose()
         dll.Finalize()
