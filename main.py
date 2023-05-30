@@ -28,16 +28,20 @@ class ForcePID():
     def output(self, force_target, force_now, now_position):
         self.epsilon = force_target - force_now
         self.epsilon_sum += self.epsilon
+        '''
         print('epsilon:', self.epsilon)
         print('old_elpsilon', self.old_epsilon)
         print('epsilon_sum', self.epsilon_sum)
         print()
+        '''
         output = now_position - self.Kp * (self.epsilon 
                             + self.Ki * self.epsilon_sum 
                             + self.Kd * (self.epsilon - self.old_epsilon))
         self.old_epsilon = self.epsilon
 
-        if output > self.max_position:
+        if force_target - 1 < force_now < force_target + 1:
+            return int(now_position)
+        elif output > self.max_position:
             output = self.max_position
         elif output < self.min_position:
             output = self.min_position
@@ -50,7 +54,7 @@ def calc_sensor_zeros(dll, port_num, limit, status):
     if dll.SetSerialMode(port_num, True) == False:
             print('連続読み込みモードを開始できません')
             exit()
-    force_data = (ctypes.c_double * 6)()
+    force_data = (ctypes.c_double * 6)()  
     zeros = [0, 0, 0, 0, 0, 0]  # 0Nになる出力値
     repeat_time = 1000
 
@@ -75,7 +79,7 @@ def main():
     # PIDゲイン
     Kp = 1
     Ki = 0
-    Kd = 0
+    Kd = 0.2
     
     port_num = 3  # センサのポート番号
     status = ctypes.c_char()
@@ -86,13 +90,9 @@ def main():
     zeros = (ctypes.c_double * 6)  # 0Nがセンサに印加されたときの力[N]の値
     data_name = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz']  # dataに格納されている値
 
-    com_motor = 'COM7'  # モータコントローラが接続されるCOMポート
-    bit_rate = 9600  # シリアル通信のビットレート
+    com_motor = 'COM5'  # モータコントローラが接続されるCOMポート
+    bordrate = 9600  # シリアル通信のビットレート
     
-
-
-   
-
     # dll読み込み
     dll = ctypes.cdll.LoadLibrary(r'C:\Users\Shota\work\start_dash\project_python\CfsUsb.dll')  
     dll.Initialize()  # dll初期化
@@ -124,18 +124,18 @@ def main():
             print('連続読み込みモードを開始できません')
             exit()
         '''
-        
         send_data = [0, 1, 0]
         target_force = float(input('input target force[N]'))
         PID = ForcePID(Kp, Ki, Kd)  # PIDインスタンス生成
         count = 0
         time_list = []
         Fz_list = []
+        target_position_list = []
+        now_position = 0
         zeros = calc_sensor_zeros(dll, port_num, limit, status)
-        motor_serial = serial.Serial(com_motor, bit_rate, timeout = 0.1)
+        motor_serial = serial.Serial(com_motor, bordrate, timeout = 0.1)
         time.sleep(5)
         start_time = time.perf_counter()
-        
         '''
         target_position = int(input('input target position 0~4095:'))
         send_data = [0, target_position, target_position >> 8]
@@ -143,9 +143,7 @@ def main():
         send_data = list(send_data)
         send_data.insert(0, 0)
         print(send_data)
-        '''
-
-    
+        '''    
         while True: 
             if dll.GetLatestData(port_num, data, ctypes.pointer(status)) == True: 
                 time_passed = time.perf_counter() - start_time
@@ -153,25 +151,34 @@ def main():
                     data_newton[i] = limit[i] / 10000.0 * data[i] - zeros[i]
 
                 Fz = data_newton[data_name.index('Fz')]
+                output = PID.output(target_force, Fz, now_position)
+                send_data = struct.pack('<H', output)
+                send_data = list(send_data)
+                send_data.insert(0, 0)
+                #print(send_data)
+
+                '''
                 if Fz > target_force:
                     send_data[1] = 1
                 elif Fz < target_force:
                     send_data[1] = 2
                 elif Fz == target_force:
                     send_data[1] = 0
+                '''
+
                 motor_serial.write(send_data)  
-                time.sleep(0.01)
-                
+                time.sleep(0.001)
                 print(round(Fz, 3), end = ' N ')
                 time_list.append(time_passed)
                 Fz_list.append(Fz)
                 
- 
                 read_data_binary = motor_serial.read_all()
-                print(read_data_binary, end = ':')
+                #print(read_data_binary, end = ':')
                 read_data = struct.unpack('3B', read_data_binary)
                 now_position = read_data[1] + read_data[2] * 256
                 print(now_position)
+                target_position_list.append(now_position)
+                
                 
                 """
                 plt.cla()
@@ -182,26 +189,32 @@ def main():
                 plt.grid()
                 plt.pause(0.001)
                 """         
-                       
                 count += 1
+                time.sleep(0.005) # 0.01
             
             if keyboard.is_pressed('q'):  # qを押して停止
+                send_data = [1, 0, 0]
+                motor_serial.write(send_data)
                 break
             elif keyboard.is_pressed('s'):
                 target_force = float(input('input target force[N]'))
 
-
         plt.figure()   
         plt.plot(time_list, Fz_list)
-        plt.xlabel('tieme [s]')
-        plt.ylabel('force [N]')
+        plt.ylim(0, 30)
+        plt.xlabel('Time [s]')
+        plt.ylabel('Force [N]')
         plt.grid()
+        plt.savefig('result.png')
         plt.pause(5)
+        
+        result = pd.DataFrame(zip(time_list, Fz_list, target_position_list), columns = ['Time [s]', 'Fz [N]', 'target position [-]'])
+        result.to_csv('result.csv')   
             
     finally:
         #print(Fz_list)
         motor_serial.close()
-        #sdll.SetSerialMode(port_num, False)
+        #dll.SetSerialMode(port_num, False)
         dll.PortClose()
         dll.Finalize()
         del dll
