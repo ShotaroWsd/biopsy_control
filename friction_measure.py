@@ -1,3 +1,7 @@
+'''
+手動でモータを動かしたときの引張力を測定するプログラム
+'''
+
 import main
 import ctypes
 import time

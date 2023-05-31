@@ -5,7 +5,8 @@ import time
 import keyboard
 import struct
 import pandas as pd
-
+import numpy as np
+from scipy import signal
 
 class ForcePID():
     Kp = 0  # 比例ゲイン
@@ -26,25 +27,24 @@ class ForcePID():
 
     # 出力値を計算
     def output(self, force_target, force_now, now_position):
-        self.epsilon = force_target - force_now
+        self.epsilon = force_target - force_now        
         self.epsilon_sum += self.epsilon
-        '''
-        print('epsilon:', self.epsilon)
-        print('old_elpsilon', self.old_epsilon)
-        print('epsilon_sum', self.epsilon_sum)
-        print()
-        '''
         output = now_position - self.Kp * (self.epsilon 
                             + self.Ki * self.epsilon_sum 
                             + self.Kd * (self.epsilon - self.old_epsilon))
         self.old_epsilon = self.epsilon
 
         if force_target - 1 < force_now < force_target + 1:
-            return int(now_position)
+            #return int(now_position)
+            pass
+
         elif output > self.max_position:
             output = self.max_position
         elif output < self.min_position:
             output = self.min_position
+        elif np.abs(output - now_position) < 3 and np.abs(self.epsilon) < 0.05 * force_target :
+            #output = now_position
+            pass
         output = int(output)
         return output
 
@@ -77,9 +77,9 @@ def calc_sensor_zeros(dll, port_num, limit, status):
 
 def main():
     # PIDゲイン
-    Kp = 1
-    Ki = 0
-    Kd = 0.2
+    Kp = 1.1 #1, 0.8
+    Ki = 0.0009
+    Kd = 0.4 #0.2, 0.8, 0.6
     
     port_num = 3  # センサのポート番号
     status = ctypes.c_char()
@@ -90,11 +90,12 @@ def main():
     zeros = (ctypes.c_double * 6)  # 0Nがセンサに印加されたときの力[N]の値
     data_name = ['Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz']  # dataに格納されている値
 
-    com_motor = 'COM5'  # モータコントローラが接続されるCOMポート
+    com_motor = 'COM7'  # モータコントローラが接続されるCOMポート
     bordrate = 9600  # シリアル通信のビットレート
     
     # dll読み込み
-    dll = ctypes.cdll.LoadLibrary(r'C:\Users\Shota\work\start_dash\project_python\CfsUsb.dll')  
+    dll_path = r'C:\Users\Shota\work\start_dash\project_python\CfsUsb.dll'
+    dll = ctypes.cdll.LoadLibrary(dll_path)  
     dll.Initialize()  # dll初期化
 
     try:
@@ -102,39 +103,41 @@ def main():
         if dll.PortOpen(port_num) == False:
             print('ポートが開けません')
             exit()
-
         # センサ定格を確認
         if dll.GetSensorLimit(port_num, limit) == False:
             print('センサー定格が確認できません')
             exit()
-        
-        print('定格')
-        for i in range(len(limit)):
-            print(data_name[i], end = ':')
-            print(limit[i])
-
         # シリアルナンバー確認
         if dll.GetSensorInfo(port_num, serial_num) == False:
             print('シリアルナンバーが確認できません')
             exit()
-        
-        # 連続読み込みモード開始
-        '''
-        if dll.SetSerialMode(port_num, True) == False:
-            print('連続読み込みモードを開始できません')
-            exit()
-        '''
+
+
+        # low pass filter
+        cutoff_freq = 1
+        order = 1
+
+        nyquist_freq = 160 / 2
+        normalized_cutoff = cutoff_freq / nyquist_freq
+        b, a = signal.butter(order, normalized_cutoff, btype = 'low', analog = False)
+
+
         send_data = [0, 1, 0]
         target_force = float(input('input target force[N]'))
         PID = ForcePID(Kp, Ki, Kd)  # PIDインスタンス生成
-        count = 0
         time_list = []
         Fz_list = []
+        Fz_filtered_list = []
         target_position_list = []
         now_position = 0
         zeros = calc_sensor_zeros(dll, port_num, limit, status)
         motor_serial = serial.Serial(com_motor, bordrate, timeout = 0.1)
         time.sleep(5)
+
+        print('press "s" to start')
+        while True:
+            if keyboard.is_pressed('s'):
+                break
         start_time = time.perf_counter()
         '''
         target_position = int(input('input target position 0~4095:'))
@@ -151,24 +154,23 @@ def main():
                     data_newton[i] = limit[i] / 10000.0 * data[i] - zeros[i]
 
                 Fz = data_newton[data_name.index('Fz')]
-                output = PID.output(target_force, Fz, now_position)
+                Fz_filtered_list = signal.lfilter(b, a, Fz_list)
+                #print(type(Fz_filtered_list))
+                try:
+                    Fz_filtered = Fz_filtered_list[-1]
+                except IndexError:
+                    Fz_filtered = 0
+                    #Fz_filtered_list = np.append(Fz_filtered_list, 0)
+
+                output = PID.output(target_force, Fz_filtered, now_position)
                 send_data = struct.pack('<H', output)
                 send_data = list(send_data)
                 send_data.insert(0, 0)
                 #print(send_data)
 
-                '''
-                if Fz > target_force:
-                    send_data[1] = 1
-                elif Fz < target_force:
-                    send_data[1] = 2
-                elif Fz == target_force:
-                    send_data[1] = 0
-                '''
-
                 motor_serial.write(send_data)  
                 time.sleep(0.001)
-                print(round(Fz, 3), end = ' N ')
+                print(round(Fz_filtered, 3), end = ' N ')
                 time_list.append(time_passed)
                 Fz_list.append(Fz)
                 
@@ -189,9 +191,9 @@ def main():
                 plt.grid()
                 plt.pause(0.001)
                 """         
-                count += 1
+                # 現時点では0.005秒が最適
                 time.sleep(0.005) # 0.01
-            
+
             if keyboard.is_pressed('q'):  # qを押して停止
                 send_data = [1, 0, 0]
                 motor_serial.write(send_data)
@@ -199,8 +201,9 @@ def main():
             elif keyboard.is_pressed('s'):
                 target_force = float(input('input target force[N]'))
 
+        Fz_filtered_list = np.insert(Fz_filtered_list, 0, 0)
         plt.figure()   
-        plt.plot(time_list, Fz_list)
+        plt.plot(time_list, Fz_filtered_list)
         plt.ylim(0, 30)
         plt.xlabel('Time [s]')
         plt.ylabel('Force [N]')
@@ -208,7 +211,8 @@ def main():
         plt.savefig('result.png')
         plt.pause(5)
         
-        result = pd.DataFrame(zip(time_list, Fz_list, target_position_list), columns = ['Time [s]', 'Fz [N]', 'target position [-]'])
+        result = pd.DataFrame(zip(time_list, Fz_list, Fz_filtered_list, target_position_list),
+                               columns = ['Time [s]', 'Fz [N]', 'Fz filtered [N]','target position [-]'])
         result.to_csv('result.csv')   
             
     finally:
